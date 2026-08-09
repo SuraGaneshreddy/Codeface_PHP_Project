@@ -1,0 +1,122 @@
+%% Codeface — ER diagram (Mermaid). Paste into mermaid.live, GitHub, Notion, or VS Code.
+erDiagram
+    USERS ||--o{ SUBMISSIONS : "submits 1:N"
+    PROBLEMS ||--o{ SUBMISSIONS : "judged-in 1:N"
+    USERS ||--o{ LEARN_PROGRESS : "completes 1:N"
+    LEARN_LESSONS ||--o{ LEARN_PROGRESS : "covered-by 1:N"
+    LEARN_LESSONS }o..o| PROBLEMS : "references (problem_slug, logical)"
+    USERS ||--o| MATCHMAKING_QUEUE : "queues 1:0..1"
+    USERS |o--o{ ROOMS : "owns 1:N"
+    PROBLEMS |o--o{ ROOMS : "picked-for 1:N"
+    ROOMS ||--o{ ROOM_PADS : "has 1:N"
+    ROOMS ||--o{ ROOM_MEMBERS : "joins 1:N"
+    USERS ||--o{ ROOM_MEMBERS : "member-of 1:N"
+    ROOMS ||--o{ CHAT_MESSAGES : "has 1:N"
+    USERS |o--o{ CHAT_MESSAGES : "writes 1:N"
+    USERS ||--o{ PROBLEMS : "gets-🤖-AI-sets 1:N (ai_user_id)"
+
+    USERS {
+        int id PK
+        varchar username UK
+        varchar email UK
+        varchar password_hash
+        varchar display_name
+        text bio
+        varchar avatar_color
+        int rating
+        tinyint is_admin
+        datetime created_at
+        datetime last_seen
+    }
+    PROBLEMS {
+        int id PK
+        varchar slug UK
+        varchar title
+        enum difficulty
+        varchar category
+        mediumtext description
+        varchar tags
+        varchar function_name
+        mediumtext starter_js
+        mediumtext solution_js
+        mediumtext tests_json
+        mediumtext starters_json
+        int points
+        int ai_user_id FK "null = canonical; set = per-user 🤖 AI-generated"
+        datetime created_at
+    }
+    SUBMISSIONS {
+        int id PK
+        int user_id FK
+        int problem_id FK
+        varchar status
+        mediumtext code
+        int passed
+        int total
+        float runtime_ms
+        datetime created_at
+    }
+    LEARN_LESSONS {
+        int id PK
+        varchar track "PK-part of (track,slug) unique"
+        int position
+        varchar slug
+        varchar title
+        mediumtext concept
+        mediumtext example_code
+        mediumtext example_output
+        mediumtext try_code
+        varchar problem_slug "logical ref to PROBLEMS.slug"
+        int minutes
+    }
+    LEARN_PROGRESS {
+        int user_id PK,FK
+        int lesson_id PK,FK
+        datetime completed_at
+    }
+    MATCHMAKING_QUEUE {
+        int id PK
+        int user_id FK "unique — one queue entry per user"
+        varchar language
+        varchar difficulty
+        varchar status
+        varchar room_code
+        datetime created_at
+    }
+    ROOMS {
+        int id PK
+        varchar code UK
+        varchar name
+        int owner_id FK "nullable"
+        int problem_id FK "nullable"
+        varchar language
+        tinyint is_live
+        datetime created_at
+    }
+    ROOM_PADS {
+        int room_id PK,FK
+        varchar language PK
+        mediumtext content
+        int version
+        int last_editor_id
+        datetime updated_at
+    }
+    ROOM_MEMBERS {
+        int room_id PK,FK
+        int user_id PK,FK
+        varchar role
+        datetime joined_at
+        datetime last_seen
+        datetime left_at
+    }
+    CHAT_MESSAGES {
+        int id PK
+        int room_id FK
+        int user_id FK "nullable"
+        varchar body
+        datetime created_at
+    }
+    META {
+        varchar key PK
+        varchar value
+    }
