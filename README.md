@@ -4,7 +4,17 @@ A real-time coding practice and collaboration platform for beginner/intermediate
 developers. **Vanilla HTML/CSS/JS frontend · PHP + SQL backend · no frameworks,
 no build step, no Composer.**
 
-Four pillars:
+**Tech stack at a glance**
+
+| Layer | Technology |
+|---|---|
+| Frontend | hand-written HTML/CSS/JS (zero frameworks), Monaco editor via CDN (offline textarea fallback), Web Workers + Pyodide WASM for in-browser judging |
+| Backend | PHP 8 + PDO only (`backend/`), JSON API (`backend/api/`), Server-Sent Events for real-time |
+| Database | MySQL/MariaDB **or** SQLite — one codebase, both drivers, auto-created + seeded on first hit |
+| Tooling | bash + PHP + Node dev harnesses in `tools/` (dev-only; the app itself needs none) |
+| Docs | problem statement, viva Q&A, DB design + ER diagrams, deployment guide, PPT in `docs/` |
+
+Five pillars:
 
 1. **Practice** — **526 problems across 12 topics**, each solvable in **12 languages**,
    with an in-browser editor (Monaco via CDN) and instant test feedback, executed in a
@@ -37,7 +47,7 @@ Four pillars:
 
 ### Option A — zero setup (SQLite, recommended for a first look)
 
-Any PHP 8+ install works (including XAMPP's `php.exe`):
+Any PHP 8+ install works (including XAMPP's `php.exe`). Taking it online — tunnels, free PHP hosting, VPS or Docker — is covered below in [Deploy](#-deploy-take-it-online) and in full in [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md):
 
 ```bash
 cd codeface
@@ -45,7 +55,7 @@ PHP_CLI_SERVER_WORKERS=10 php -S localhost:8000      # macOS/Linux
 # Windows (XAMPP):  set PHP_CLI_SERVER_WORKERS=10 && C:\xampp\php\php.exe -S localhost:8000
 ```
 
-Open http://localhost:8000. The SQLite database (`database/data/codeface.sqlite`) is created and
+Open http://localhost:8000 (redirects to `frontend/`). The SQLite database (`database/data/codeface.sqlite`) is created and
 seeded automatically on the first request.
 
 > `PHP_CLI_SERVER_WORKERS=10` matters: the built-in server single-threads by default, and a
@@ -74,7 +84,7 @@ first request (no phpMyAdmin import needed). If you prefer manual setup, import
 | `carol` | `password123` | labs & refactor enthusiast | 10 ✓ unlocked (boundary) |
 | `dev_mike` | `password123` | beginner | 3/10 🔒 — demo the lock wall |
 
-Try it live: open `room.php?code=DEMO42` in two browsers as alice and bob and type.
+Try it live: open `frontend/room.php?code=DEMO42` in two browsers as alice and bob and type.
 
 **🤖 Demo the AI generator in 10 seconds:** mark everything as solved for alice, then just
 reload the Practice/Labs/Refactor pages and watch new sets appear (run twice to get set 2):
@@ -97,12 +107,85 @@ INSERT INTO refactor_runs (user_id, challenge_slug, score, tests_passed, tests_t
          (1,'sync-spaghetti-stats',92,4,4,'{}',CURRENT_TIMESTAMP);
 ```
 
+---
+
+## 🚀 Deploy (take it online)
+
+Full guide with screenshots-level detail: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md). The summary:
+
+| Option | Cost | Best for | Effort |
+|---|---|---|---|
+| **Laptop + Cloudflare/ngrok tunnel** | ₹0 | viva & demo day — laptop stays the server | 5 min |
+| **InfinityFree / AwardSpace / HelioHost** (shared PHP+MySQL) | ₹0 | always-on public link for your resume | 20 min |
+| **Cloud VPS** via GitHub Student Pack (DigitalOcean/Azure credits) | ₹0 w/ student card | best fidelity — SSE live rooms first-class | 45 min |
+| **Docker** (Render / Railway / any Docker host) | free tier | reproducible containers | 15 min |
+
+**Requirements (any option):** PHP 8.0+, `pdo_mysql` or `pdo_sqlite`, Apache-style
+`.htaccess` handling. Schema + demo data self-create on first request — no import step.
+
+### Tunnel demo (share your local XAMPP in 5 minutes)
+
+```bash
+cd codeface
+PHP_CLI_SERVER_WORKERS=10 php -S 127.0.0.1:8000
+cloudflared tunnel --url http://localhost:8000   # …or: ngrok http 8000
+```
+
+→ you get a public `https://*.trycloudflare.com` (or `.ngrok-free.app`) link. The root
+URL redirects into `frontend/` automatically. Open it on a second device for a
+two-screen live-room demo.
+
+### Free shared hosting (InfinityFree recipe)
+
+1. Sign up → create hosting account → create a **MySQL database**; note host (⚠️ not
+   `localhost` — e.g. `sql123.infinityfree.com`), db name, user, password.
+2. Upload & extract `codeface-deploy.zip` into `htdocs/` — then **verify the hidden
+   files transferred** (FTP often skips them): `/.htaccess`, `backend/lib/.htaccess`,
+   `backend/config/.htaccess`, `backend/partials/.htaccess`, `database/.htaccess`,
+   `database/data/.htaccess`. Without them your code/config/SQLite file are downloadable.
+3. Edit `backend/config/config.php`: `'driver' => 'mysql'` + host/name/user/pass from step 1.
+4. Visit your subdomain → 14 tables + seed data are created automatically on first hit.
+   **Forgot-password emails:** set env `CODEFACE_SMTP_USER` / `CODEFACE_SMTP_PASS` (a Gmail
+   *App Password*) if the panel allows env vars, else edit `backend/config/config.php` → `'smtp'`.
+   With no SMTP configured, the OTP is written to `database/data/outbox.log` (offline demo mode).
+
+Shared-host note: if the host buffers long requests, live rooms silently fall back to
+2.5 s polling — already built into `frontend/assets/js/room.js`.
+
+### Docker
+
+A `Dockerfile` ships at the repo root (PHP 8.2 + Apache + `pdo_mysql`; SQLite driver is
+built into the image):
+
+```bash
+docker build -t codeface .
+docker run -p 8080:80 codeface                                    # zero-config SQLite demo
+docker run -p 8080:80 -e CODEFACE_DB_DRIVER=mysql \
+  -e CODEFACE_DB_HOST=... -e CODEFACE_DB_PORT=3306 \
+  -e CODEFACE_DB_USER=... -e CODEFACE_DB_PASS=... \
+  -e CODEFACE_DB_NAME=codeface codeface                          # external MySQL
+```
+
+`backend/config/config.php` reads every `CODEFACE_DB_*` env var — no code edits inside
+containers. The image also flips `AllowOverride All` so the `.htaccess` deny guards
+(`backend/`, `database/data/`) work identically to shared hosting. On Render:
+*New → Web Service → Git repo → Docker runtime*.
+
+### Post-deploy checklist
+
+1. Home loads and redirects to `frontend/index.php`.
+2. Register a fresh account (proves DB writes).
+3. Solve **Two Sum** in JavaScript → Submit → leaderboard points increase.
+4. Open `frontend/room.php?code=DEMO42` in **two browsers** (alice + bob) → typing syncs.
+5. `frontend/profile.php` → upload a photo (proves upload + passthrough).
+6. As `dev_mike`, Labs/Refactor show the 🔒 practice-gate wall.
+7. `GET /database/data/codeface.sqlite` over HTTP must be **403**.
 
 ---
 
 ## Feature tour
 
-- **Practice (`problems.php`)** — **526 seeded problems** across 12 categories — arrays (62),
+- **Practice (`frontend/problems.php`)** — **526 seeded problems** across 12 categories — arrays (62),
   strings (56), DP (51), math (50), hash maps (50), real-world mini-apps (41), search (40),
   greedy (40), stack (38), bits (37), two pointers (37), matrix (25) — filterable by
   difficulty and topic, with deterministic JSON test suites (≥2 visible + hidden edge cases
@@ -115,7 +198,7 @@ INSERT INTO refactor_runs (user_id, challenge_slug, score, tests_passed, tests_t
   JSON deep-equality. The other 9 languages run in **reference mode**: full starters,
   tests and a reference solution to work against locally (no safe way to `exec()` compilers
   on a vanilla-PHP shared host). See *Honest limitations* below.
-- **Learn (`learn.php`)** — 15 tracks × 16 lessons in four sequential levels — 🌱 Beginner
+- **Learn (`frontend/learn.php`)** — 15 tracks × 16 lessons in four sequential levels — 🌱 Beginner
   (values → functions → collections → pipelines), 🌿 Intermediate (mini-projects, applied
   topics), 🌳 Advance (OOP, I/O, libraries, idioms), 🏆 Pro (testing, tooling, error design +
   a capstone mini-project) — each anchored in a real scenario (coffee carts,
@@ -127,21 +210,21 @@ INSERT INTO refactor_runs (user_id, challenge_slug, score, tests_passed, tests_t
   bash). Progress is tracked per lesson, per level and per track; **levels hard-lock
   sequentially** (server-side: track grid, level page, lesson page and the completion API all
   enforce it).
-- **Rooms (`rooms.php`, `room.php`)** — shared pads for **all 12 languages** with versioned
+- **Rooms (`frontend/rooms.php`, `frontend/room.php`)** — shared pads for **all 12 languages** with versioned
   sync; 6-letter join codes; chat; presence with heartbeat; SSE push with automatic
   reconnect and a polling fallback if SSE is blocked.
 - **Matchmaking** — pick language + difficulty; matched with the waiting user whose rating
   is closest; both land in a fresh room with a random problem of that difficulty.
-- **Leaderboard** — points from first-time solves (easy 10 / medium 20 / hard 35),
+- **Leaderboard (`frontend/leaderboard.php`)** — points from first-time solves (easy 10 / medium 20 / hard 35),
   tie-broken by who solved first. Rating = 1200 + points earned.
-- **Pro Labs (`labs.php`)** — gated: unlocks after your first **10 solved practice problems**
+- **Pro Labs (`frontend/labs.php`)** — gated: unlocks after your first **10 solved practice problems**
   (a progress wall shows X/10 until then). 6 multi-file environments with per-tab Monaco
   editors: readonly
   files act as published APIs you cannot touch; every task check runs inside the sandboxed
   Worker in project mode (files concatenated in order, checks evaluated in scope).
   Completion is stored per user, and each lab ended up *provably solvable* (originals fail
   ≥1 check, a known-good fix passes all of them — verified by the Node harness).
-- **Refactor Gym (`refactor.php`)** — same 10-solve practice gate as Labs. Metrics engine
+- **Refactor Gym (`frontend/refactor.php`)** — same 10-solve practice gate as Labs. Metrics engine
   wires complexity, duplication %,
   nesting depth, long-function and cryptic-name counts into a baseline-vs-yours table;
   submit is accepted only when all safety tests pass. Every original repo is
@@ -165,6 +248,19 @@ INSERT INTO refactor_runs (user_id, challenge_slug, score, tests_passed, tests_t
   Gym (X/6, or the 🔒 practice-gate state), and **Learn broken down per language** with
   not-started / ongoing / complete ✓ chips and progress bars. Friends' profiles show the
   same journey read-only.
+- **Forgot password → real email OTP (`frontend/forgot.php` / `reset.php`)** — enter the email on
+  your account and a **6-digit code lands in your actual inbox** (Gmail included): a hand-rolled
+  SMTP client (`backend/lib/mailer.php`, plain PHP sockets — no Composer) talks to Gmail over
+  STARTTLS with an App Password. Codes are bcrypt-hashed, expire in 10 minutes, allow 5 attempts,
+  resend-throttled to 1/minute, and the form never reveals whether an email exists. No SMTP
+  configured? The code lands in `database/data/outbox.log` so offline demos still work.
+- **Email existence guard (login + register)** — every typed email is sanity-checked live:
+  RFC format, then **strict MX mail-server records** for its domain via a tiny
+  `backend/api/auth/check-email.php` endpoint (rate-limited, DNS-offline-safe). A
+  non-deliverable address paints a **red warning under the field** — “gmial.com has no mail
+  server — this mailbox can’t exist” — with a clickable *“did you mean gmail.com?”* fix, and
+  registration is refused server-side with the same red alert. (True mailbox *ownership* is
+  still proven by the OTP flow above.)
 - **Senior-engineer review (👨‍💻 button)** — rule-based static analysis (eval/innerHTML
   dangers, loose equality, empty catches, dead code, magic numbers, long functions,
   pyramid nesting, TODOs, Python mutable defaults & bare excepts…) producing titled
@@ -172,9 +268,14 @@ INSERT INTO refactor_runs (user_id, challenge_slug, score, tests_passed, tests_t
 
 ## Architecture
 
+The repo is organized by responsibility — `frontend/` (everything the browser can open),
+`backend/` (PHP engine + JSON API), `database/` (schemas + live data), `docs/` and
+`tools/`; the root `index.php` simply redirects into `frontend/`.
+
 ```
 codeface/
 ├── index.php                 entry shim → redirects to frontend/index.php
+├── Dockerfile · .dockerignore  one-container deploy (PHP 8.2 + Apache + pdo_mysql)
 ├── frontend/                 everything the browser can open (pages + assets)
 │   ├── index.php · login.php · register.php · logout.php      # public + auth pages
 │   ├── problems.php · problem.php                             # practice (list + workspace)
@@ -215,21 +316,24 @@ codeface/
 ├── database/
 │   ├── schema.sqlite.sql · schema.mysql.sql          # applied automatically
 │   └── data/               SQLite home (server-writable; .htaccess-protected)
-├── docs/                 problem statement · viva Q&A · database design · PPT ·
-│                          er-diagram.svg · db-design.svg (+ .mmd source)
+├── docs/                 problem statement · architecture · viva Q&A · database design ·
+│                          deploy guide · PPT · architecture.svg / er-diagram.svg / db-design.svg
 └── tools/              dev verification harnesses: verify-ai-dump.php + verify-ai.js
-                        (AI-content prover) · integration-test.sh (59 HTTP assertions,
+                        (AI-content prover) · integration-test.sh (106 HTTP assertions,
                         driver-switchable via ITEST_* env vars)
 ```
 
 ### Data model (both engines)
 
-`users`, `problems` (`tests_json`, `starters_json`, `category`), `submissions`, `rooms`,
+`users` (incl. `avatar` for uploaded photos), `problems` (`tests_json`, `starters_json`,
+`category`, `ai_user_id` marking per-user 🤖 AI sets), `submissions`, `rooms`,
 `room_pads` (versioned content per language), `room_members` (presence via `last_seen`),
 `matchmaking_queue` (unique per user), `learn_lessons`, `learn_progress`,
 `lab_progress` (composite PK per user+lab), `refactor_runs` (score history; best = MAX),
-`meta` (schema version — content upgrades re-seed idempotently). **13 tables**, 15 FKs
-(problems includes `ai_user_id` for per-user 🤖 AI-generated problem sets).
+`password_resets` (hashed 6-digit OTPs, 10-minute TTL, attempt-capped),
+`meta` (schema version — content upgrades re-seed idempotently; current schema **v10**).
+**14 tables**, 16 FKs. Full write-up: [docs/DATABASE_DESIGN.md](docs/DATABASE_DESIGN.md)
+(+ `docs/er-diagram.svg`, `docs/db-design.svg`).
 
 ### Real-time design
 
@@ -243,6 +347,37 @@ codeface/
   languages are lazily created on first push.
 - If SSE errors 8 times (corporate proxy, aggressive shared host), the UI silently switches
   to 2.5 s polling of `state.php` — rooms stay live everywhere.
+
+## Verification & tests
+
+Everything ships machine-verified; the harnesses are dev tools in `tools/` (the app
+itself needs none of them):
+
+| Suite | What it proves | Result |
+|---|---|---|
+| `php tools/verify-ai-dump.php` + `node tools/verify-ai.js` | every canonical AND AI-generated item is real: reference solutions pass all 160 sampled tests (same `canon()` deep-equality as the browser Worker), lab originals fail ≥1 task & staff fixes pass all, refactor messes score 55 with measured baselines, staff fixes score ≥90, PHP↔JS metrics parity | **1084/1084 ✅** |
+| `bash tools/integration-test.sh` | 106 HTTP assertions over real curl sessions as all 4 demo users: practice gate walls (page + API), AI treadmills for all 3 sections, per-user ownership 404s, anti-tamper guards, guest behavior, profile avatar/name/journey, **live rooms (create/pads/409-sync/chat/SSE/heartbeat), matchmaking and the full forgot-password email-OTP flow** (via the bundled fake-SMTP harness: `node tools/fake-smtp.js` + `ITEST_SMTPBOX`) | **106/106 ✅ on SQLite and 106/106 ✅ on MySQL** |
+| `php -l` + `node --check` sweeps | every PHP and JS file parses | clean |
+
+```bash
+# integration suite against a MySQL-backed instance:
+ITEST_BASE=http://127.0.0.1:8094 \
+ITEST_DSN="mysql:host=127.0.0.1;port=3306;dbname=codeface" \
+ITEST_DSN_USER=root ITEST_DSN_PASS= bash tools/integration-test.sh
+```
+
+## Documentation index
+
+| File | Contents |
+|---|---|
+| [docs/PROBLEM_STATEMENT.md](docs/PROBLEM_STATEMENT.md) | what the project sets out to solve |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | project-name + **3-tier architecture selection** (justification, alternatives, implementation status) |
+| [docs/DATABASE_DESIGN.md](docs/DATABASE_DESIGN.md) | all 14 tables, keys, FKs, ER rationale |
+| [docs/VIVA-QA.md](docs/VIVA-QA.md) | viva questions & answers (incl. AI engine, gates, testing) |
+| [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | full deploy guide: tunnels, free PHP hosts, VPS, Docker |
+| [docs/Codeface-Presentation.pptx](docs/Codeface-Presentation.pptx) | presentation deck |
+| `docs/architecture.svg` | 3-tier architecture diagram (presentation-ready) |
+| `docs/er-diagram.svg` · `docs/db-design.svg` (+ `.mmd` source) | schema diagrams |
 
 ## Assumptions & flagged deviations
 
@@ -268,7 +403,7 @@ so anything past the tech-stack section was my call. Specifically:
    adopt the server copy), not full OT/CRDT. In pair-programming etiquette (one driver) this
    is indistinguishable; true CRDT would need a much bigger client.
 5. **"100 to 500 practice problems" → shipped 526.** The bank is data-driven
-   (`lib/pbank/*.php`): added by appending `pdef(...)` entries — starters for all 12
+   (`backend/lib/pbank/*.php`): added by appending `pdef(...)` entries — starters for all 12
    languages, tests, descriptions and points are generated automatically, and the whole
    bank is validated by running every reference solution against every test in CI-style
    Node before shipping.
@@ -276,7 +411,7 @@ so anything past the tech-stack section was my call. Specifically:
    public. Demo data is seeded exactly once, at DB creation.
 7. **The "AI" is an offline deterministic generator, not a cloud LLM.** The brief asked for
    an AI that creates new content automatically, but the no-frameworks/no-APIs stack (and
-   XAMPP-offline demos) rules out calling a model — so `lib/aibank.php` composes new
+   XAMPP-offline demos) rules out calling a model — so `backend/lib/aibank.php` composes new
    problems, labs and refactor repos from parameterized template families seeded per
    `user × batch × slot`: two users get different sets, the same user regenerating batch 3
    gets it byte-identical, and the PHP oracle that builds each item also bakes its tests —
@@ -291,6 +426,14 @@ so anything past the tech-stack section was my call. Specifically:
   tag whitelist (`allow_html`); chat is stored raw and escaped on render.
 - CSRF: session token required on every state-changing request (header or form field).
 - Server never evals user code (see deviation 1). Pad size caps: 200 KB; chat 500 chars.
+- Avatar uploads: mime sniffed via `finfo` + `getimagesize`, ≤ 2 MB, JPG/PNG/GIF/WebP only;
+  stored under web-denied `database/data/avatars/` and streamed via `frontend/avatar.php`.
+- Password resets: OTPs stored as `password_hash` digests only, 10-min expiry, 5-attempt cap,
+  60 s resend throttle, session flood-guard, one-time use, no account enumeration.
+- `.htaccess` deny guards on `backend/lib/`, `backend/config/`, `backend/partials/`,
+  `database/` and `database/data/` (keep them when uploading — see Deploy).
+- Per-user AI content is ownership-checked server-side (other users get a real 404), and the
+  refactor submit API recomputes the expected test count to reject tampered payloads.
 
 ## Troubleshooting
 
@@ -300,8 +443,15 @@ so anything past the tech-stack section was my call. Specifically:
 | Room stuck on "connecting…" | it will fall back to polling in a few seconds; SSE may be blocked by a proxy |
 | Everything freezes with `php -S` | you forgot `PHP_CLI_SERVER_WORKERS=10` |
 | MySQL errors on XAMPP | create an empty DB yourself or verify `root`/blank password in `backend/config/config.php`; driver must be `'mysql'` |
+| MySQL errors on shared hosting | host is **not** `localhost` — copy the exact host from the panel |
+| Styles/scripts missing after an update | hard-refresh (Ctrl+F5); confirm `frontend/assets/` uploaded fully |
+| `403` from Apache everywhere | host `.htaccess` conflict — comment out `Options -Indexes` in `/.htaccess` |
 | Monaco didn't load (offline) | expected — the fallback textarea editor engages automatically |
 | Python run says "downloading…" forever | Pyodide comes from jsDelivr — check the network tab / offline mode |
+| Reset email never arrives | Gmail needs an **App Password** (2-Step Verification ON → myaccount.google.com/apppasswords), not your login password; also check Spam. With no SMTP configured the OTP is in `database/data/outbox.log` |
+| "Connection refused" in PHP log on send | outbound 587 blocked (some free hosts) — try `'secure' => 'ssl'` + port 465, or a local relay; the dev fallback always logs to `outbox.log` |
+| Red “no mail server” warning on a real email | almost always a domain typo — click the inline *did-you-mean* fix; if it’s your own custom domain, its MX records may just not have propagated yet |
+| Register blocked while fully offline | DNS is unreachable → MX checks are skipped automatically (they never block offline demos); the *server-side* gate also yields when DNS can’t be consulted |
 
 ## Roadmap
 
