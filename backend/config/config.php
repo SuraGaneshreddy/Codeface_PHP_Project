@@ -27,6 +27,15 @@ return [
             'charset' => 'utf8mb4',
         ],
     ],
+    'smtp' => [   /* forgot-password OTP emails (Gmail: App Password → see docs/DEPLOYMENT.md) */
+        'host'      => getenv('CODEFACE_SMTP_HOST') ?: 'smtp.gmail.com',
+        'port'      => (int)(getenv('CODEFACE_SMTP_PORT') ?: 587),
+        'secure'    => getenv('CODEFACE_SMTP_SECURE') ?: 'tls',   // tls (STARTTLS) | ssl (465) | none (local test)
+        'user'      => getenv('CODEFACE_SMTP_USER') ?: '',        // your Gmail address — empty = offline outbox.log mode
+        'pass'      => getenv('CODEFACE_SMTP_PASS') ?: '',        // 16-char Gmail App Password (NOT your login password)
+        'from'      => getenv('CODEFACE_SMTP_FROM') ?: (getenv('CODEFACE_SMTP_USER') ?: 'no-reply@codeface.local'),
+        'from_name' => 'Codeface',
+    ],
     'sse' => [
         'enabled'     => true,
         'max_seconds' => 50,   // each SSE connection self-terminates after this; EventSource auto-reconnects

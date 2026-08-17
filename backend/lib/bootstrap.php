@@ -22,6 +22,8 @@ require __DIR__ . '/refactorbank.php';
 require __DIR__ . '/aibank.php';      // offline AI content engine (deterministic generator)
 require __DIR__ . '/db.php';
 require __DIR__ . '/auth.php';
+require __DIR__ . '/password_reset.php'; // forgot-password OTP library (+ SMTP mailer)
+require __DIR__ . '/emailcheck.php';    // live email format + MX + typo-suggestion checks
 require __DIR__ . '/rooms.php';
 
 date_default_timezone_set('UTC');

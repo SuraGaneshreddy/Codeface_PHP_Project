@@ -18,8 +18,9 @@ declare(strict_types=1);
         server-side-locked levels (🌱 1–4, 🌿 5–8, 🌳 9–12, 🏆 13–16).
     v8: Hackathon section removed (tables dropped); problems.ai_user_id added
         for per-user 🤖 AI-generated problem sets.
-    v9: users.avatar — uploaded profile photo filename (initials fallback). */
-const CF_SCHEMA_VERSION = 9; // v9: users.avatar (profile photo upload)
+    v9: users.avatar — uploaded profile photo filename (initials fallback).
+    v10: password_resets — hashed 6-digit OTPs with 10-min expiry for forgot-password. */
+const CF_SCHEMA_VERSION = 10; // v10: password_resets (forgot-password OTP flow)
 
 /** Compact problem-spec builder used across lib/pbank files. */
 function pdef(string $slug, string $title, string $difficulty, string $fn, array $sig,
@@ -224,6 +225,26 @@ function cf_migrate_and_seed(PDO $pdo): void {
 
     // v8 → v9: profile photo uploads (initials + hue circle stays the fallback).
     try { $pdo->exec('ALTER TABLE users ADD COLUMN avatar ' . ($mysql ? 'VARCHAR(40) NULL' : 'TEXT NULL')); } catch (Throwable $e) {}
+
+    // v9 → v10: forgot-password OTP table (idempotent on every driver).
+    if ($mysql) {
+        $pdo->exec("CREATE TABLE IF NOT EXISTS password_resets (
+              id INT AUTO_INCREMENT PRIMARY KEY, user_id INT NOT NULL,
+              otp_hash VARCHAR(255) NOT NULL, expires_at DATETIME NOT NULL,
+              attempts INT NOT NULL DEFAULT 0, used_at DATETIME NULL,
+              created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              INDEX idx_resets_user (user_id),
+              CONSTRAINT fk_resets_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+    } else {
+        $pdo->exec("CREATE TABLE IF NOT EXISTS password_resets (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+              otp_hash TEXT NOT NULL, expires_at TEXT NOT NULL,
+              attempts INTEGER NOT NULL DEFAULT 0, used_at TEXT,
+              created_at TEXT NOT NULL DEFAULT (datetime('now')))");
+        $pdo->exec("CREATE INDEX IF NOT EXISTS idx_resets_user ON password_resets(user_id)");
+    }
 
     cf_seed_content($pdo);
     cf_meta_set($pdo, 'schema_version', (string)CF_SCHEMA_VERSION);
