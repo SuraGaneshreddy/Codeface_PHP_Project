@@ -15,6 +15,18 @@ CREATE TABLE users (
   last_seen     DATETIME     NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE password_resets (
+  id          INT AUTO_INCREMENT PRIMARY KEY,
+  user_id     INT NOT NULL,
+  otp_hash    VARCHAR(255) NOT NULL,
+  expires_at  DATETIME NOT NULL,
+  attempts    INT NOT NULL DEFAULT 0,
+  used_at     DATETIME NULL,
+  created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_resets_user (user_id),
+  CONSTRAINT fk_resets_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE problems (
   id            INT AUTO_INCREMENT PRIMARY KEY,
   slug          VARCHAR(80) NOT NULL UNIQUE,
