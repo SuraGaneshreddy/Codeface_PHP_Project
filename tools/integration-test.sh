@@ -1,7 +1,10 @@
 #!/bin/bash
 # Codeface end-to-end HTTP integration tests (developer tool).
 # Covers: AI treadmills (problems/labs/refactor), ownership & unlock gates,
-#         the 10-problem practice gate, guest behavior, API validation.
+#         the 10-problem practice gate, guest behavior, live rooms (create/pads/
+#         sync/409/chat/SSE/heartbeat), matchmaking, email-OTP password reset
+#         (section H runs when ITEST_SMTPBOX points at a fake-smtp capture file),
+#         email existence guard (MX + typo suggestions), API validation.
 #
 # Prereqs: the app reachable (e.g. `php -S 127.0.0.1:8093 -t .`), fresh seeded DB
 #          (delete database/data/codeface.sqlite and hit any page), demo accounts present.
@@ -66,6 +69,7 @@ db_has() { PHPSQL "echo (int)(\$p->query(\"SELECT COUNT(*) c FROM users WHERE us
 
 echo "############ 0. logins"
 login carol; login dev_mike; login alice; login bob
+TA2=$(csrf_of alice); TB2=$(csrf_of bob); TC2=$(csrf_of carol)
 echo "############ A. PRACTICE GATE (10 solves unlock Labs & Refactor)"
 PHPSQL '$p->exec("DELETE FROM submissions WHERE user_id=4");
   $p->exec("INSERT INTO submissions (user_id, problem_id, status, code, passed, total, created_at)
@@ -88,6 +92,9 @@ CODE=$(http "$(jar carol)" labs.php); [ "$CODE" = "200" ]; ck "carol (10/10): la
 CODE=$(http "$(jar carol)" refactor.php); [ "$CODE" = "200" ]; ck "carol: refactor 200" $? "got $CODE"
 
 echo "############ B. PROBLEMS TREADMILL (alice)"
+# idempotent: wipe alice's previous AI batches (submissions first — FK)
+PHPSQL '$p->exec("DELETE FROM submissions WHERE user_id=1 AND problem_id IN (SELECT id FROM problems WHERE ai_user_id=1)");
+        $p->exec("DELETE FROM problems WHERE ai_user_id=1");'
 AI0=$(PHPSQL 'echo $p->query("SELECT COUNT(*) c FROM problems WHERE ai_user_id IS NOT NULL")->fetch()["c"];')
 sweep_problems 1
 curl -s -b "$(jar alice)" $APP/problems.php > /tmp/cf_p1.html
@@ -200,5 +207,135 @@ CODE=$(curl -s -b "$(jar dev_mike)" -o /dev/null -w "%{http_code}" -X POST $API/
 PHPSQL '$p->exec("UPDATE users SET display_name='"'"'Mike T.'"'"', bio='"'"'Career switcher. JavaScript first, fear later.'"'"', avatar=NULL WHERE id=4");'
 rm -f /home/user/codeface/database/data/avatars/u4.png 2>/dev/null || true
 
+echo "############ G. LIVE ROOMS (lobby, create, pads, collab sync, chat, SSE, matchmaking)"
+R=$(curl -s -b "$(jar alice)" -X POST $API/rooms/create.php -H "Content-Type: application/json" -H "X-CSRF-Token: $TA2" -d '{"name":"Itest Room","language":"javascript","problem_id":1}')
+echo "$R" | grep -q '"ok":true'; ck "create room → ok" $? "got $R"
+RCODE=$(echo "$R" | grep -o '"code":"[A-Z0-9]*"' | cut -d'"' -f4)
+[ -n "$RCODE" ]; ck "6-char room code issued" $? "got $RCODE"
+CODE=$(http "$(jar alice)" "room.php?code=$RCODE"); [ "$CODE" = "200" ]; ck "owner opens room page" $? "got $CODE"
+CODE=$(http "$(jar bob)" "room.php?code=$RCODE"); [ "$CODE" = "200" ]; ck "bob opens room page" $? "got $CODE"
+R=$(curl -s -b "$(jar alice)" -X POST $API/rooms/push.php -H "Content-Type: application/json" -H "X-CSRF-Token: $TA2" -d "{\"code\":\"$RCODE\",\"language\":\"javascript\",\"base_version\":0,\"content\":\"// itest hello\"}")
+echo "$R" | grep -q '"version":1'; ck "pad push → v1" $? "got $R"
+curl -s -b "$(jar bob)" "$API/rooms/state.php?code=$RCODE" > /tmp/cf_state.json
+grep -q "itest hello" /tmp/cf_state.json; ck "bob's state shows alice's edit (sync)" $?
+CODE=$(curl -s -o /dev/null -w "%{http_code}" -b "$(jar bob)" -X POST $API/rooms/push.php -H "Content-Type: application/json" -H "X-CSRF-Token: $TB2" -d "{\"code\":\"$RCODE\",\"language\":\"javascript\",\"base_version\":0,\"content\":\"// stale\"}")
+[ "$CODE" = "409" ]; ck "stale base_version → 409 conflict" $? "got $CODE"
+R=$(curl -s -b "$(jar bob)" -X POST $API/rooms/chat.php -H "Content-Type: application/json" -H "X-CSRF-Token: $TB2" -d "{\"code\":\"$RCODE\",\"body\":\"itest-chat\"}")
+echo "$R" | grep -q "itest-chat"; ck "chat post ok" $? "got $R"
+curl -s -b "$(jar alice)" "$API/rooms/state.php?code=$RCODE" | grep -q "itest-chat"; ck "chat visible in alice's state" $?
+timeout 4 curl -sN -b "$(jar alice)" "$API/rooms/stream.php?code=$RCODE" > /tmp/cf_sse.txt 2>/dev/null || true
+grep -q "event: snapshot" /tmp/cf_sse.txt; ck "SSE stream sends snapshot" $?
+grep -q '"members"' /tmp/cf_sse.txt; ck "SSE snapshot carries presence" $?
+CODE=$(curl -s -o /dev/null -w "%{http_code}" -b "$(jar alice)" "$API/rooms/state.php?code=ZZZZZZ"); [ "$CODE" = "404" ]; ck "bogus room code → 404" $? "got $CODE"
+HTTP_GUEST=$(curl -s -o /dev/null -w "%{http_code}" "$API/rooms/state.php?code=$RCODE"); [ "$HTTP_GUEST" = "401" ] || [ "$HTTP_GUEST" = "403" ]; ck "guest blocked from room API (401/403)" $? "got $HTTP_GUEST"
+R=$(curl -s -b "$(jar alice)" -X POST $API/rooms/heartbeat.php -H "Content-Type: application/json" -H "X-CSRF-Token: $TA2" -d "{\"code\":\"$RCODE\"}")
+echo "$R" | grep -q '"ok":true'; ck "heartbeat ok" $? "got $R"
+R=$(curl -s -b "$(jar carol)" -X POST $API/matchmaking/join.php -H "Content-Type: application/json" -H "X-CSRF-Token: $TC2" -d '{"language":"javascript","difficulty":"medium"}')
+echo "$R" | grep -q '"ok":true'; ck "matchmaking join" $? "got $R"
+R=$(curl -s -b "$(jar carol)" -X POST $API/matchmaking/cancel.php -H "Content-Type: application/json" -H "X-CSRF-Token: $TC2" -d '{}')
+echo "$R" | grep -q '"ok":true'; ck "matchmaking cancel" $? "got $R"
+PHPSQL '$p->exec("DELETE FROM room_members WHERE room_id IN (SELECT id FROM rooms WHERE name=\"Itest Room\")");$p->exec("DELETE FROM room_pads WHERE room_id IN (SELECT id FROM rooms WHERE name=\"Itest Room\")");$p->exec("DELETE FROM rooms WHERE name=\"Itest Room\"");' 2>/dev/null || true
+
+echo "############ H. FORGOT-PASSWORD EMAIL OTP (real SMTP path, captured locally)"
+if [ -z "${ITEST_SMTPBOX:-}" ]; then
+  echo "  ⤷ skipped: start \`node tools/fake-smtp.js /tmp/smtpbox.log 2525\`, boot the app with CODEFACE_SMTP_* env, re-run with ITEST_SMTPBOX=/tmp/smtpbox.log"
+else
+  JG=/tmp/cf_jar_guest.txt; rm -f "$JG"; touch "$ITEST_SMTPBOX"
+  # idempotent: wipe leftovers from any previous run before registering
+  PHPSQL '$p->exec("DELETE FROM password_resets WHERE user_id IN (SELECT id FROM users WHERE username=\"otp_user\")");$p->exec("DELETE FROM users WHERE username=\"otp_user\"");' 
+  GHDR=-H; TG() { curl -s -c "$JG" -b "$JG" "$APP/$1" | grep -o '<meta name="csrf" content="[^"]*"' | head -1 | sed 's/.*content="//;s/"//'; }
+  OTPMAIL="otp.user@gmail.com"
+
+  CODE=$(curl -s -o /tmp/cf_h.html -w "%{http_code}" -c "$JG" "$APP/forgot.php"); [ "$CODE" = "200" ]; ck "forgot.php renders" $? "got $CODE"
+  grep -q "Forgot password" /tmp/cf_h.html; ck "forgot page content" $?
+
+  RG=/tmp/cf_jar_reg.txt; rm -f "$RG"
+  CR=$(curl -s -c "$RG" $APP/register.php | grep -o 'name="csrf" value="[^"]*"' | head -1 | sed 's/.*value="//;s/"//')
+  CODE=$(curl -s -o /dev/null -w "%{http_code}" -c "$RG" -b "$RG" -X POST $APP/register.php \
+    --data-urlencode "csrf=$CR" --data-urlencode "username=otp_user" --data-urlencode "email=$OTPMAIL" \
+    --data-urlencode "password=password123" --data-urlencode "confirm=password123")
+  [ "$CODE" = "302" ]; ck "register otp_user (302)" $? "got $CODE"
+
+  N0=$(grep -c "^==== " "$ITEST_SMTPBOX" 2>/dev/null)
+  C=$(TG forgot.php)
+  curl -s -b "$JG" -X POST $APP/forgot.php --data-urlencode "csrf=$C" --data-urlencode "email=nobody@gmail.com" > /tmp/cf_h1.html
+  grep -q "Check your inbox" /tmp/cf_h1.html; ck "unknown email → same neutral page (no enumeration)" $?
+  N1=$(grep -c "^==== " "$ITEST_SMTPBOX"); [ "$N1" = "$N0" ]; ck "no mail goes out for unknown email" $? "box $N0→$N1"
+
+  C=$(TG forgot.php)
+  curl -s -b "$JG" -X POST $APP/forgot.php --data-urlencode "csrf=$C" --data-urlencode "email=$OTPMAIL" > /tmp/cf_h2.html
+  grep -q "Check your inbox" /tmp/cf_h2.html; ck "known email → neutral page" $?
+  N2=$(grep -c "^==== " "$ITEST_SMTPBOX"); [ "$N2" = "$((N0+1))" ]; ck "one mail left the server" $? "box $N0→$N2"
+  awk "/^==== /{b=\"\"} {b=b \$0 ORS} END{printf \"%s\", b}" "$ITEST_SMTPBOX" > /tmp/cf_lastmail.txt
+  grep -q "To: <$OTPMAIL>" /tmp/cf_lastmail.txt; ck "mail addressed to the account's Gmail" $?
+  OTP=$(grep -oE '[0-9]{6}' /tmp/cf_lastmail.txt | head -1)
+  [ -n "$OTP" ]; ck "6-digit OTP inside the email body" $? "got '$OTP'"
+  V=$(OTPVAL="$OTP" PHPSQL '$r=$p->query("SELECT pr.otp_hash FROM password_resets pr JOIN users u ON u.id=pr.user_id WHERE u.email=\"otp.user@gmail.com\" ORDER BY pr.id DESC LIMIT 1")->fetch();echo password_verify(getenv("OTPVAL"), $r["otp_hash"]) ? "1" : "0";')
+  [ "$V" = "1" ]; ck "DB stores only the HASH of the OTP" $? "verify=$V"
+
+  # resend within 60s is throttled
+  C=$(TG forgot.php); curl -s -b "$JG" -X POST $APP/forgot.php --data-urlencode "csrf=$C" --data-urlencode "email=$OTPMAIL" > /dev/null
+  N3=$(grep -c "^==== " "$ITEST_SMTPBOX"); [ "$N3" = "$N2" ]; ck "resend <60s throttled (no second mail)" $? "box $N2→$N3"
+
+  C=$(TG reset.php)
+  curl -s -b "$JG" -X POST $APP/reset.php --data-urlencode "csrf=$C" --data-urlencode "email=$OTPMAIL" --data-urlencode "otp=000000" --data-urlencode "password=newpassword9" --data-urlencode "confirm=newpassword9" > /tmp/cf_h3.html
+  grep -q "not valid or has expired" /tmp/cf_h3.html; ck "wrong code rejected" $?
+  ATT=$(PHPSQL '$r=$p->query("SELECT attempts FROM password_resets pr JOIN users u ON u.id=pr.user_id WHERE u.email=\"otp.user@gmail.com\" ORDER BY pr.id DESC LIMIT 1")->fetch();echo $r["attempts"];')
+  [ "$ATT" = "1" ]; ck "attempts counter = 1 (brute-force guard)" $? "got $ATT"
+
+  C=$(TG reset.php)
+  CODE=$(curl -s -o /dev/null -w "%{http_code}" -b "$JG" -X POST $APP/reset.php --data-urlencode "csrf=$C" --data-urlencode "email=$OTPMAIL" --data-urlencode "otp=$OTP" --data-urlencode "password=newpassword9" --data-urlencode "confirm=newpassword9")
+  [ "$CODE" = "302" ]; ck "correct code + new password → 302 to login" $? "got $CODE"
+  curl -s -b "$JG" "$APP/login.php" | grep -q "Password updated"; ck "login page shows success flash" $?
+  U=$(PHPSQL '$r=$p->query("SELECT used_at FROM password_resets pr JOIN users u ON u.id=pr.user_id WHERE u.email=\"otp.user@gmail.com\" ORDER BY pr.id DESC LIMIT 1")->fetch();echo $r["used_at"] ? "1" : "0";')
+  [ "$U" = "1" ]; ck "code marked used (one-time only)" $?
+
+  LJ=/tmp/cf_jar_otp_login.txt; rm -f "$LJ"
+  C=$(curl -s -c "$LJ" $APP/login.php | grep -o 'name="csrf" value="[^"]*"' | head -1 | sed 's/.*value="//;s/"//')
+  curl -s -b "$LJ" -X POST $APP/login.php --data-urlencode "csrf=$C" --data-urlencode "identity=otp_user" --data-urlencode "password=password123" > /tmp/cf_h4.html
+  grep -q "No account matches" /tmp/cf_h4.html; ck "OLD password no longer works" $?
+  C=$(curl -s -c "$LJ" $APP/login.php | grep -o 'name="csrf" value="[^"]*"' | head -1 | sed 's/.*value="//;s/"//')
+  CODE=$(curl -s -o /dev/null -w "%{http_code}" -b "$LJ" -c "$LJ" -X POST $APP/login.php --data-urlencode "csrf=$C" --data-urlencode "identity=otp_user" --data-urlencode "password=newpassword9")
+  [ "$CODE" = "302" ]; ck "NEW password logs in" $? "got $CODE"
+
+  C=$(TG reset.php)
+  curl -s -b "$JG" -X POST $APP/reset.php --data-urlencode "csrf=$C" --data-urlencode "email=$OTPMAIL" --data-urlencode "otp=$OTP" --data-urlencode "password=anotherpass9" --data-urlencode "confirm=anotherpass9" > /tmp/cf_h5.html
+  grep -q "not valid or has expired" /tmp/cf_h5.html; ck "used code cannot be replayed" $?
+
+  PHPSQL '$r=$p->query("SELECT id FROM users WHERE email=\"otp.user@gmail.com\"")->fetch();$uid=$r["id"];
+    $st=$p->prepare("INSERT INTO password_resets (user_id, otp_hash, expires_at, created_at) VALUES (?,?,?,CURRENT_TIMESTAMP)");
+    $st->execute([$uid, password_hash("424242", PASSWORD_DEFAULT), "2000-01-01 00:00:00"]);'
+  C=$(TG reset.php)
+  curl -s -b "$JG" -X POST $APP/reset.php --data-urlencode "csrf=$C" --data-urlencode "email=$OTPMAIL" --data-urlencode "otp=424242" --data-urlencode "password=whatever99" --data-urlencode "confirm=whatever99" > /tmp/cf_h6.html
+  grep -q "not valid or has expired" /tmp/cf_h6.html; ck "expired code rejected" $?
+
+  PHPSQL '$p->exec("DELETE FROM password_resets WHERE user_id IN (SELECT id FROM users WHERE username=\"otp_user\")");$p->exec("DELETE FROM users WHERE username=\"otp_user\"");'
+fi
+echo "############ I. EMAIL EXISTENCE GUARD (format + MX records + typo suggestions)"
+JI=/tmp/cf_jar_i.txt; rm -f "$JI"
+R=$(curl -s -c "$JI" -b "$JI" -X POST $API/auth/check-email.php --data-urlencode "email=notanemail")
+echo "$R" | grep -q '"format":false'; ck "API: garbage format flagged" $? "got $R"
+R=$(curl -s -c "$JI" -b "$JI" -X POST $API/auth/check-email.php --data-urlencode "email=friend@gmial.com")
+echo "$R" | grep -q '"suggestion":"gmail.com"'; ck "API: gmial.com → suggests gmail.com" $? "got $R"
+echo "$R" | grep -q '"mx":false'; ck "API: gmial.com → no mail server" $?
+R=$(curl -s -c "$JI" -b "$JI" -X POST $API/auth/check-email.php --data-urlencode "email=someone@gmail.com")
+echo "$R" | grep -q '"mx":true'; ck "API: gmail.com → MX ok" $? "got $R"
+R=$(curl -s -c "$JI" -b "$JI" -X POST $API/auth/check-email.php --data-urlencode "email=x@nope-xqwc-39817.com")
+echo "$R" | grep -q '"mx":false'; ck "API: invented domain → no mail server" $? "got $R"
+
+jcsrf() { curl -s -c "$JI" -b "$JI" "$APP/$1" | grep -o 'name="csrf" value="[^"]*"' | head -1 | sed 's/.*value="//;s/"//'; }
+C=$(jcsrf register.php)
+curl -s -b "$JI" -X POST $APP/register.php --data-urlencode "csrf=$C" --data-urlencode "username=mx_bad1" --data-urlencode "email=mx_bad@gmial.com" --data-urlencode "password=password123" --data-urlencode "confirm=password123" > /tmp/cf_i1.html
+grep -q "Did you mean gmail.com" /tmp/cf_i1.html; ck "register @gmial.com → red “did you mean gmail.com?”" $?
+grep -q 'alert alert-error' /tmp/cf_i1.html; ck "register @gmial.com → account NOT created" $?
+C=$(jcsrf register.php)
+curl -s -b "$JI" -X POST $APP/register.php --data-urlencode "csrf=$C" --data-urlencode "username=mx_bad2" --data-urlencode "email=x@nope-xqwc-39817.com" --data-urlencode "password=password123" --data-urlencode "confirm=password123" > /tmp/cf_i2.html
+grep -q "has no mail server" /tmp/cf_i2.html; ck "register invented domain → red rejection" $?
+C=$(jcsrf register.php)
+CODE=$(curl -s -o /dev/null -w "%{http_code}" -b "$JI" -X POST $APP/register.php --data-urlencode "csrf=$C" --data-urlencode "username=mx_user" --data-urlencode "email=mx.user@gmail.com" --data-urlencode "password=password123" --data-urlencode "confirm=password123")
+[ "$CODE" = "302" ]; ck "real gmail.com address registers fine" $? "got $CODE"
+curl -s -c "$JI" -b "$JI" $APP/login.php | grep -q "data-emailcheck"; ck "login form wired for live check" $?
+curl -s -c "$JI" -b "$JI" $APP/register.php | grep -q "data-emailcheck"; ck "register form wired for live check" $?
+PHPSQL '$p->exec("DELETE FROM users WHERE username IN (\"mx_user\",\"mx_bad1\",\"mx_bad2\")");'
 echo; echo "════════ INTEGRATION SUMMARY: pass=$PASS fail=$FAIL ════════"
 [ "$FAIL" = "0" ]
