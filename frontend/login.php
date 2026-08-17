@@ -30,8 +30,12 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
     }
 }
 
+$flash = $_SESSION['flash_login'] ?? null;
+unset($_SESSION['flash_login']);
+
 $page_title = 'Log in';
 $active = '';
+$page_scripts = ['assets/js/email-check.js'];
 require __DIR__ . '/../backend/partials/head.php';
 require __DIR__ . '/../backend/partials/header.php';
 ?>
@@ -39,19 +43,21 @@ require __DIR__ . '/../backend/partials/header.php';
   <form class="card form-card" method="post" action="login.php" novalidate>
     <h1>Welcome back</h1>
     <p class="form-sub">Log in to keep your streak, rooms, and rating.</p>
+    <?php if ($flash): ?><div class="alert alert-success"><?= e($flash) ?></div><?php endif; ?>
     <?php if ($error): ?><div class="alert alert-error"><?= e($error) ?></div><?php endif; ?>
     <input type="hidden" name="csrf" value="<?= e(csrf_token()) ?>">
     <input type="hidden" name="next" value="<?= e($next) ?>">
     <label class="field">
       <span>Username or email</span>
-      <input class="input" type="text" name="identity" value="<?= e($identity) ?>" autocomplete="username" required autofocus>
+      <input class="input" type="text" name="identity" value="<?= e($identity) ?>" autocomplete="username" data-emailcheck data-emailcheck-if-email required autofocus>
+      <small class="email-warn" data-emailhint role="status"></small>
     </label>
     <label class="field">
       <span>Password</span>
       <input class="input" type="password" name="password" autocomplete="current-password" required>
     </label>
     <button class="btn btn-primary btn-lg btn-block" type="submit">Log in</button>
-    <p class="form-alt">New to Codeface? <a href="register.php">Create an account</a></p>
+    <p class="form-alt">New to Codeface? <a href="register.php">Create an account</a> · <a href="forgot.php">Forgot password?</a></p>
     <p class="demo-hint">Demo accounts: <code>alice</code>, <code>bob</code>, <code>carol</code> — password <code>password123</code></p>
   </form>
 </div>

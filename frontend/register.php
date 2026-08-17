@@ -15,6 +15,8 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
 
     if ($password !== $confirm) {
         $error = 'Passwords do not match.';
+    } elseif (($emailErr = cf_email_reject_reason($old['email'])) !== null) {
+        $error = $emailErr;   // red alert: undeliverable domain / typo / bad format
     } else {
         try {
             $uid = register_user($old['username'], $old['email'], $password);
@@ -29,6 +31,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
 
 $page_title = 'Create account';
 $active = '';
+$page_scripts = ['assets/js/email-check.js'];
 require __DIR__ . '/../backend/partials/head.php';
 require __DIR__ . '/../backend/partials/header.php';
 ?>
@@ -45,7 +48,8 @@ require __DIR__ . '/../backend/partials/header.php';
     </label>
     <label class="field">
       <span>Email</span>
-      <input class="input" type="email" name="email" value="<?= e($old['email']) ?>" autocomplete="email" required>
+      <input class="input" type="email" name="email" value="<?= e($old['email']) ?>" autocomplete="email" data-emailcheck required>
+      <small class="email-warn" data-emailhint role="status"></small>
     </label>
     <label class="field">
       <span>Password</span>

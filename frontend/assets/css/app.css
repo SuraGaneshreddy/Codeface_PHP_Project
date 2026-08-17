@@ -762,3 +762,10 @@ a.journey-row:hover, a.learn-mini:hover { background: rgba(148, 163, 184, .08); 
   .st-chip { justify-self: start; }
   .learn-mini { grid-template-columns: 96px 1fr 40px 84px; }
 }
+
+/* ── Live email existence check (register + login forms) ── */
+.email-warn { display: block; margin-top: 5px; font-size: 12.5px; line-height: 1.35; min-height: 0; }
+.email-warn.err { color: #f87171; font-weight: 500; }
+.email-warn.ok { color: #34d399; }
+.email-warn.dim { color: #94a3b8; }
+.email-warn a { color: inherit; text-decoration: underline; cursor: pointer; }
