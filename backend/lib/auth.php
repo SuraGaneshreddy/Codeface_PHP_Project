@@ -48,6 +48,10 @@ function login_attempt(string $identity, string $password): ?array {
  * Register a new user. Throws RuntimeException with a human message on validation failure.
  * Returns the new user id.
  */
+/**
+ * Validate + register a new user from a PLAIN password.
+ * Throws RuntimeException with a human message on validation failure.
+ */
 function register_user(string $username, string $email, string $password): int {
     $username = trim($username);
     $email    = trim($email);
@@ -61,13 +65,18 @@ function register_user(string $username, string $email, string $password): int {
     if (strlen($password) < 8) {
         throw new RuntimeException('Password must be at least 8 characters.');
     }
+    return create_user_account($username, $email, password_hash($password, PASSWORD_DEFAULT));
+}
+
+/** Insert the account with a PRE-HASHED password (used after email verification,
+ *  where only the hash was parked in the session — the plaintext never lingers). */
+function create_user_account(string $username, string $email, string $passwordHash): int {
     if (db_one('SELECT id FROM users WHERE username = ?', [$username])) {
         throw new RuntimeException('That username is taken.');
     }
     if (db_one('SELECT id FROM users WHERE email = ?', [$email])) {
         throw new RuntimeException('An account with that email already exists.');
     }
-
     $st = db()->prepare(
         'INSERT INTO users (username, email, password_hash, display_name, bio, avatar_color, rating, created_at, last_seen)
          VALUES (?, ?, ?, ?, ?, ?, 1200, ?, ?)'
@@ -75,7 +84,7 @@ function register_user(string $username, string $email, string $password): int {
     $st->execute([
         $username,
         $email,
-        password_hash($password, PASSWORD_DEFAULT),
+        $passwordHash,
         $username,
         '',
         random_avatar_color(),
