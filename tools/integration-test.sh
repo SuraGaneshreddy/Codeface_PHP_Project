@@ -4,7 +4,8 @@
 #         the 10-problem practice gate, guest behavior, live rooms (create/pads/
 #         sync/409/chat/SSE/heartbeat), matchmaking, email-OTP password reset
 #         (section H runs when ITEST_SMTPBOX points at a fake-smtp capture file),
-#         email existence guard (MX + typo suggestions), API validation.
+#         email existence guard (MX + typo suggestions), two-step verified signup
+#         (section J, mailbox-existence gate), API validation.
 #
 # Prereqs: the app reachable (e.g. `php -S 127.0.0.1:8093 -t .`), fresh seeded DB
 #          (delete database/data/codeface.sqlite and hit any page), demo accounts present.
@@ -30,6 +31,20 @@ login() { local jar=/tmp/cf_jar_$1.txt; rm -f "$jar"
   curl -s -b "$jar" -c "$jar" -X POST $APP/login.php --data-urlencode "csrf=$c" --data-urlencode "identity=$1" --data-urlencode "password=password123" -o /dev/null; }
 jar() { echo /tmp/cf_jar_$1.txt; }
 csrf_of() { curl -s -b "$(jar $1)" "$APP/index.php" | grep -o '<meta name="csrf" content="[^"]*"' | head -1 | sed 's/.*content="//;s/"//'; }
+# Two-step verified signup (sections H–J): with SMTP configured, register.php first
+# emails a code and only creates the account after it comes back. Handles both modes.
+register_verified() { # $1 jar $2 username $3 email $4 password → prints final HTTP code
+  local jar=$1 c code otp
+  c=$(curl -s -c "$jar" "$APP/register.php" | grep -o 'name="csrf" value="[^"]*"' | head -1 | sed 's/.*value="//;s/"//')
+  code=$(curl -s -o /tmp/cf_reg_s1.html -w "%{http_code}" -c "$jar" -b "$jar" -X POST "$APP/register.php" \
+    --data-urlencode "csrf=$c" --data-urlencode "username=$2" --data-urlencode "email=$3" \
+    --data-urlencode "password=$4" --data-urlencode "confirm=$4")
+  [ "$code" = "302" ] && { echo 302; return; }                          # one-step mode (no SMTP)
+  grep -q 'name="otp"' /tmp/cf_reg_s1.html || { echo "$code"; return; } # validation error page
+  otp=$(awk '/^==== /{b=""} {b=b $0 ORS} END{printf "%s", b}' "$ITEST_SMTPBOX" | grep -oE '[0-9]{6}' | tail -1)
+  curl -s -o /dev/null -w "%{http_code}" -c "$jar" -b "$jar" -X POST "$APP/register.php" \
+    --data-urlencode "csrf=$c" --data-urlencode "action=verify" --data-urlencode "otp=$otp"
+}
 http() { curl -s -b "$1" -o "${3:-/dev/null}" -w "%{http_code}" "$APP/$2"; }
 
 # idempotent insert helper (driver-agnostic via NOT EXISTS)
@@ -250,11 +265,8 @@ else
   grep -q "Forgot password" /tmp/cf_h.html; ck "forgot page content" $?
 
   RG=/tmp/cf_jar_reg.txt; rm -f "$RG"
-  CR=$(curl -s -c "$RG" $APP/register.php | grep -o 'name="csrf" value="[^"]*"' | head -1 | sed 's/.*value="//;s/"//')
-  CODE=$(curl -s -o /dev/null -w "%{http_code}" -c "$RG" -b "$RG" -X POST $APP/register.php \
-    --data-urlencode "csrf=$CR" --data-urlencode "username=otp_user" --data-urlencode "email=$OTPMAIL" \
-    --data-urlencode "password=password123" --data-urlencode "confirm=password123")
-  [ "$CODE" = "302" ]; ck "register otp_user (302)" $? "got $CODE"
+  CODE=$(register_verified "$RG" otp_user "$OTPMAIL" password123)
+  [ "$CODE" = "302" ]; ck "register otp_user (email-verified signup)" $? "got $CODE"
 
   N0=$(grep -c "^==== " "$ITEST_SMTPBOX" 2>/dev/null)
   C=$(TG forgot.php)
@@ -331,11 +343,43 @@ grep -q 'alert alert-error' /tmp/cf_i1.html; ck "register @gmial.com → account
 C=$(jcsrf register.php)
 curl -s -b "$JI" -X POST $APP/register.php --data-urlencode "csrf=$C" --data-urlencode "username=mx_bad2" --data-urlencode "email=x@nope-xqwc-39817.com" --data-urlencode "password=password123" --data-urlencode "confirm=password123" > /tmp/cf_i2.html
 grep -q "has no mail server" /tmp/cf_i2.html; ck "register invented domain → red rejection" $?
-C=$(jcsrf register.php)
-CODE=$(curl -s -o /dev/null -w "%{http_code}" -b "$JI" -X POST $APP/register.php --data-urlencode "csrf=$C" --data-urlencode "username=mx_user" --data-urlencode "email=mx.user@gmail.com" --data-urlencode "password=password123" --data-urlencode "confirm=password123")
+JIX=/tmp/cf_jar_ix.txt; rm -f "$JIX"   # fresh anonymous jar (JI may be logged in by now)
+curl -s -c "$JIX" -b "$JIX" $APP/login.php | grep -q "data-emailcheck"; ck "login form wired for live check" $?
+curl -s -c "$JIX" -b "$JIX" $APP/register.php | grep -q "data-emailcheck"; ck "register form wired for live check" $?
+CODE=$(register_verified "$JI" mx_user "mx.user@gmail.com" password123)
 [ "$CODE" = "302" ]; ck "real gmail.com address registers fine" $? "got $CODE"
-curl -s -c "$JI" -b "$JI" $APP/login.php | grep -q "data-emailcheck"; ck "login form wired for live check" $?
-curl -s -c "$JI" -b "$JI" $APP/register.php | grep -q "data-emailcheck"; ck "register form wired for live check" $?
 PHPSQL '$p->exec("DELETE FROM users WHERE username IN (\"mx_user\",\"mx_bad1\",\"mx_bad2\")");'
+echo "############ J. SIGNUP EMAIL VERIFICATION GATE (mailbox must really exist)"
+if [ -z "${ITEST_SMTPBOX:-}" ]; then
+  echo "  ⤷ skipped (like section H: needs fake-smtp + SMTP env)"
+else
+  JV=/tmp/cf_jar_v.txt; rm -f "$JV"
+  PHPSQL '$p->exec("DELETE FROM users WHERE username=\"vest_user\"");'
+  C=$(curl -s -c "$JV" $APP/register.php | grep -o 'name="csrf" value="[^"]*"' | head -1 | sed 's/.*value="//;s/"//')
+  NB=$(grep -c "^==== " "$ITEST_SMTPBOX")
+  CODE=$(curl -s -o /tmp/cf_j1.html -w "%{http_code}" -c "$JV" -b "$JV" -X POST $APP/register.php \
+    --data-urlencode "csrf=$C" --data-urlencode "username=vest_user" --data-urlencode "email=vest.user@gmail.com" \
+    --data-urlencode "password=password123" --data-urlencode "confirm=password123")
+  [ "$CODE" = "200" ]; ck "step 1 parks the signup (no instant account)" $? "got $CODE"
+  grep -q "Verify your email" /tmp/cf_j1.html; ck "step 2 asks for the emailed code" $?
+  D=$(PHPSQL 'echo $p->query("SELECT COUNT(*) c FROM users WHERE username=\"vest_user\"")->fetch()["c"];')
+  [ "$D" = "0" ]; ck "nothing in DB until the code comes back" $? "got $D"
+  NB2=$(grep -c "^==== " "$ITEST_SMTPBOX"); [ "$NB2" = "$((NB+1))" ]; ck "verification mail left the server" $? "box $NB→$NB2"
+  awk '/^==== /{b=""} {b=b $0 ORS} END{printf "%s", b}' "$ITEST_SMTPBOX" > /tmp/cf_jm.txt
+  grep -q "To: <vest.user@gmail.com>" /tmp/cf_jm.txt; ck "mail addressed to the signup gmail" $?
+  OTP2=$(grep -oE '[0-9]{6}' /tmp/cf_jm.txt | tail -1)
+  WRONG=000000; [ "$OTP2" = "000000" ] && WRONG=111111
+  curl -s -c "$JV" -b "$JV" -X POST $APP/register.php --data-urlencode "csrf=$C" --data-urlencode "action=verify" --data-urlencode "otp=$WRONG" > /tmp/cf_j2.html
+  grep -q "match the email we sent" /tmp/cf_j2.html; ck "wrong code → red error" $?
+  D=$(PHPSQL 'echo $p->query("SELECT COUNT(*) c FROM users WHERE username=\"vest_user\"")->fetch()["c"];')
+  [ "$D" = "0" ]; ck "wrong code creates nothing" $?
+  CODE=$(curl -s -o /dev/null -w "%{http_code}" -c "$JV" -b "$JV" -X POST $APP/register.php --data-urlencode "csrf=$C" --data-urlencode "action=verify" --data-urlencode "otp=$OTP2")
+  [ "$CODE" = "302" ]; ck "correct code creates the account (302)" $? "got $CODE"
+  H1=$(PHPSQL '$r=$p->query("SELECT password_hash h FROM users WHERE username=\"vest_user\"")->fetch();echo $r["h"] ?? "";')
+  curl -s -o /dev/null -b "$JV" -X POST $APP/register.php --data-urlencode "csrf=$C" --data-urlencode "action=verify" --data-urlencode "otp=$OTP2"
+  H2=$(PHPSQL '$r=$p->query("SELECT password_hash h FROM users WHERE username=\"vest_user\"")->fetch();echo $r["h"] ?? "";')
+  [ -n "$H1" ] && [ "$H1" = "$H2" ]; ck "consumed code is single-use (no-op replay)" $?
+  PHPSQL '$p->exec("DELETE FROM users WHERE username=\"vest_user\"");'
+fi
 echo; echo "════════ INTEGRATION SUMMARY: pass=$PASS fail=$FAIL ════════"
 [ "$FAIL" = "0" ]
